@@ -1,7 +1,7 @@
 # End_Game_Foul_Strategy_Analysis
 Application Project
 
-### End-Game Foul Strategy Analysis.pdf
+### Final Report.pdf
 * The final 2-page report for coaches and analysts
 
 ### endgame_strategy_scratchwork.Rmd
@@ -13,8 +13,8 @@ Application Project
 ### Bucks Question 2 Response.pdf
 * Response to Question 2 of the Analyst Questionnaire
 
-### End-Game Foul Strategy Data Decisions
+### Data Decisions.pdf
 * Notes about why I chose to make certain decisions in my analysis
 
-### End-Game Foul Strategy Findings
+### Findings.pdf
 * Bulleted list of findings from the analysis
