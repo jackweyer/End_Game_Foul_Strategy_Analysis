@@ -1,0 +1,517 @@
+---
+title: "Scratch Work: Final Seconds Up 3 Recommendation"
+author: "Jack Weyer"
+date: "2023-09-25"
+output: pdf_document
+---
+## Question
+* <b>Should we foul?</b>
+
+## Situation
+* 4th Quarter
+* <24 seconds
+* Shot Clock off
+* Up 3
+* On Defense
+
+## Constraints
+* Given the resources available (csv of all chances in past 3 regular seasons with <24 seconds in the game (4th Q or OT), shot clock off, offensive team down 3)
+* 1-2 pages including viz, not including code
+
+## Task
+* Make recommendation to the coach on a prescribed course of action
+* Recommendation can be understood by coach & analyst sides
+* Include code/viz used in the analysis
+* Indicate other data points that would improve response
+*** Data on which games went to Overtime. This is obviously not an ideal scenario for a team up 3 (i.e. something went wrong). These teams may still *win* in overtime but their final seconds certainly weren't managed ideally. 
+*** Control for situations where team unintentionally fouls
+
+
+```{r}
+library(tidyverse)
+data <- read_csv("chances.csv")
+
+data %>% glimpse()
+```
+
+*** Bias of "final seconds of game"???
+
+Prompt says "final seconds of the game" so I was wondering if there was some bias in the data. For example, will a game that is in the 4th quarter and will <i>eventually</i> go to overtime, that meets the criteria be included in the data? There could be bias for decisions that force overtime not being in the data.
+
+I got lucky with the first example I checked. Turns out, they ARE in the data which is great. The Knicks decided not to <b>intentionally</b> foul up 3. Brown bullied Grimes for an and-one. The game prolonged and the Knicks eventually won in 2OT.
+```{r}
+data %>% filter(gid_nba == "0022200969")
+```
+
+
+Make empirical tree of what happened?
+
+Things to think about:
+How are these chances starting? How are they ending?
+Same game double counting?
+What if we wait to foul? What is strategy as function of seconds remaining?
+Is it ok to just limit threes? If we don't foul, is there point expectancy threshold that we win?
+Output is a final number: This strategy increases our win % ___.
+Threshold of start chance time remaining where we don't count decisions. Eg with 3 seconds left, offenses will be gunning for shots. Risk fouling jump shooter
+Exclude chances starting with offensive rebound? These are scramble situations that are linked to another chance
+
+Other Questions:
+What are the shot qualities of the final looks? Where do they come from? What has been their luck? (What do offenses try to do and how do those strategies relate to winning?)
+Is utilizing fouls to give a viable strategy?
+Which teams foul?
+
+Things I'm learning...
+405 chances.. not 405 <b>decisions</b> (we want to focus on decisions)
+A game can have multiple decisions (i.e. 4th Quarter vs. overtime or different possessions)
+I'm inclined to keep decisions within the possession. Should be a threshold of time remaining in possession to "count." Eg with 3 seconds left, it is extremely risky to foul someone outside of the 3pt line. They are looking to shoot.
+A possession with multiple chances should be counted as one DECISION. For example the game below... 
+  Chance 1: Jump Ball to trailing team & immediate timeout (not counted.. Chance can't end in Timeout)
+  Chance 2: Rozier corner three to tie game (not counted.. Possession can't start with < 5 seconds. If you watch the video, Rozier got open and shot. No chance to foul)
+  Chance 3: Mitchell missed three to Mobley offensive rebound (counts)
+  Chance 4: Mobley offensive rebound to Garland three to tie (doesn't count.. can't start with ORebound)
+  Output: 1 Decision to NOT foul (CHA)... 1 Loss (CHA) (doesn't really matter which of 3 or 4 we pick. Just pick 1. This is easier to automate)
+  
+  
+Chance can't start with...Possession that started with < 5 seconds (not enough time to foul & increased risk of fouling a jump shooter)
+Chance can't start with... Offensive Rebound (we take the chance before this and avoid double counting)
+
+Chance can't end with...Timeout (TMO)
+
+Get possession start times
+```{r}
+# add possession start times
+data <- data %>% 
+  group_by(xid_possession) %>% 
+  mutate(poss_start_time = max(gameClock_start)) 
+
+data %>% group_by(gid_nba) %>% count(sort = T)
+
+data %>% filter(gid_nba == "0022200225")
+```
+
+Start Types
+```{r}
+data %>% 
+  group_by(startType) %>% 
+  count(sort = TRUE)
+```
+exclude.. FGORB
+
+```{r}
+data %>% 
+  group_by(outcome) %>% 
+  count(sort = TRUE)
+```
+
+not fouling... FGX3, FGM3, FGM, FGX, TO, FOU_S, EPD, JMP
+fouling... FOU_B
+
+exclude.. FOU_N (There will be another chance within that possession. Use that data.)
+exclude.. TMO (neither fouling or not fouling.. will count next chance in possession)
+exclude.. Out of Bounds (these are non-turnovers and are paired with valid chances)
+exclude.. VIO (kick ball here)
+
+```{r}
+filtered_data <- data %>% 
+  mutate(valid_decision = ifelse(startType == "FGORB" | poss_start_time < 5 | outcome == "FOU_N" | outcome == "TMO" | outcome == "Out of Bounds" | outcome == "VIO", FALSE, TRUE)) %>% 
+  mutate(choice_foul = ifelse(valid_decision == 1 & outcome == "FOU_B", "Foul", "Defend")) %>% 
+  mutate(def_team_won = ifelse(team_nba_def == team_nba_winner, TRUE, FALSE))
+```
+
+Investigate outcome out of bounds.. Verdict: remove these (not valid)
+```{r}
+filtered_data %>% filter(outcome == "Out of Bounds")
+```
+
+there should only be one DECISION per possession. don't double count for plays where offense retains possession
+```{r}
+filtered_data %>% filter(valid_decision == 1) %>% 
+  group_by(xid_possession) %>% count(sort = T) %>% filter(n > 1)
+```
+```{r}
+filtered_data %>% filter(xid_possession == "ef52893d-c8f4-5603-9c05-febbdf3d6e25" ) # slice(1) for possession
+```
+This is a case where the Hornets got back-to-back "team offensive rebounds" by the ball going out of bounds. We want to treat this as one decision. 
+I could filter out chances where a gameClock_start = gameClock_end. But I am going to experiment with counting all of these as one decision by slicing the last chance and picking that.
+
+```{r}
+filtered_data %>% filter(xid_possession == "2bac441a-dac0-5623-bff2-bf3b1f4b643b") # slice 1 from this. Count as offensive rebound. Was a foul, overturned as no foul, jump ball recovered by offense, non-intensional foul
+```
+
+```{r}
+filtered_data %>% filter(xid_possession == "362830ae-c351-5fca-a90e-4cca79f2a62e") # remove both.. first chance is actually down by 4. Second chance (after FT OREB) not enough time
+```
+
+```{r}
+filtered_data %>% filter(xid_possession == "641c05e0-5076-5064-9f6f-543f753cda01") # mark as one choice to not foul.. slice(1).. blocked out of bounds
+#hm %>% filter(gid_nba == "0022201180")
+```
+
+```{r}
+filtered_data %>% filter(xid_possession == "674ae62e-e199-5602-ac47-39087ef798a9") # string of offensive rebounds. Slice(1)
+#hm %>% filter(gid_nba == "0022201210")
+```
+```{r}
+filtered_data %>% filter(xid_possession == "6cd5de49-1d8e-5c37-8161-3d7a3f590929") # remove second chance. Williams off. reb to himself
+#hm %>% filter(gid_nba == "0022000336")
+```
+
+
+```{r}
+filtered_data %>% filter(xid_possession == "9a0c070f-eff6-52b1-bbef-eeccf4b2ad03") # count as one. keep first. (successful challenge. two opportunities. like an offensive rebound)
+#hm %>% filter(gid_nba == "0022101014")
+```
+
+
+```{r}
+filtered_data %>% filter(xid_possession == "ae5ce2dc-3761-5e47-9428-1889f8c904bf") # o rebound out of bounds. slice(1)
+#hm %>% filter(gid_nba == "0022100510")
+```
+
+```{r}
+filtered_data %>% filter(xid_possession == "ed2f7d2c-531a-5e1b-8cea-998381d87521") # jump ball recovered by O. keep one
+#hm %>% filter(gid_nba == "0022001015")
+```
+
+Investigate shooting fouls for "intentional fouls gone wrong"
+Sometimes they actually foul
+```{r}
+filtered_data %>% 
+  mutate(valid_decision = ifelse(xid_possession == "362830ae-c351-5fca-a90e-4cca79f2a62e", FALSE, valid_decision)) %>% 
+  filter(valid_decision == TRUE) %>% 
+  mutate(choice_foul = ifelse(xid_possession %in% c("d9a43033-2e0a-5cb7-acd8-39aa9b7e3199", "209b406c-6c7d-5307-a74a-941349be17ec", "fadcb1e8-9afc-566f-8315-47b204abbb86"), "Foul", choice_foul))  %>% # manually checked
+  filter(outcome == "FOU_S")
+# trying to foul but accidentally fouled a shooter: (change these to choice_foul==T).
+# poss: d9a43033-2e0a-5cb7-acd8-39aa9b7e3199, 209b406c-6c7d-5307-a74a-941349be17ec, fadcb1e8-9afc-566f-8315-47b204abbb86
+
+
+filtered_data %>% 
+  mutate(valid_decision = ifelse(xid_possession == "362830ae-c351-5fca-a90e-4cca79f2a62e", FALSE, valid_decision)) %>% 
+  filter(valid_decision == TRUE) %>% 
+  mutate(choice_foul = ifelse(xid_possession %in% c("d9a43033-2e0a-5cb7-acd8-39aa9b7e3199", "209b406c-6c7d-5307-a74a-941349be17ec", "fadcb1e8-9afc-566f-8315-47b204abbb86"), "Foul", choice_foul))  %>% 
+  filter(fouls_def_shooting == 1) %>% 
+  filter(outcome != "FOU_S")
+
+
+# trying to foul but accidentally foul a shooter (change these to choice_foul==T)
+#xid_chance: 316e96c1-5b46-59e5-922c-a85869ee2b58
+```
+
+
+```{r}
+valid_poss <- filtered_data %>% 
+  mutate(valid_decision = ifelse(xid_possession == "362830ae-c351-5fca-a90e-4cca79f2a62e", FALSE, valid_decision)) %>% 
+  mutate(valid_decision = ifelse(xid_chance == "19f838c7-adeb-5640-b665-b27c991831c7", FALSE, valid_decision)) %>% 
+  filter(valid_decision == TRUE) %>% 
+  mutate(choice_foul = ifelse(xid_possession %in% c("d9a43033-2e0a-5cb7-acd8-39aa9b7e3199", "209b406c-6c7d-5307-a74a-941349be17ec", "fadcb1e8-9afc-566f-8315-47b204abbb86", "8b4dec8f-ede7-5bc3-b446-415af9d1bd54"), "Foul", choice_foul)) # shooting fouls that were intentional fouls gone wrong
+
+valid_poss %>% 
+  group_by(xid_possession) %>% 
+  slice_tail(n=1) %>% # 1 decision per possession
+  ungroup() %>% 
+  group_by(choice_foul, def_team_won) %>% 
+  count()
+
+  
+# First analysis::: Teams choose to foul 15% of the time
+# Teams who choose to foul win the game 93% of the time
+# Teams who do not foul win the game 88% of the time
+  
+```
+```{r}
+library(reactable)
+valid_poss %>%  
+  group_by(xid_possession) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  group_by(team_nba_def, choice_foul) %>% 
+  count() %>% 
+  pivot_wider(names_from = choice_foul, values_from = n) %>% 
+  mutate_all(funs(replace(., is.na(.), 0))) %>% 
+  mutate(opportunities = `Defend` + `Foul`) %>% 
+  mutate(foul_rate = `Foul` / opportunities) %>% 
+  select(-`Defend`, fouled = `Foul`) %>% 
+  arrange(desc(foul_rate)) %>% 
+  mutate(foul_rate = round(foul_rate, 2)) %>% 
+  reactable(defaultSorted = list(foul_rate = "desc", opportunities = "asc"), 
+            defaultColDef = colDef(vAlign = "center", headerVAlign = "bottom", align = "center"),
+            pagination = F,
+            highlight = T,
+            style = list(fontFamily = "Arial"),
+            columns = 
+              list(
+                team_nba_def = colDef(name = "TEAM", filterable = T),
+                fouled = colDef(name = "FOUL STRATEGY"),
+                opportunities = colDef(name = "OPPORTUNITIES"),
+                foul_rate = colDef(name = "FOUL RATE")
+                
+              ))
+```
+
+When teams intentionally foul, how often do teams accidentally foul a three-point shooter?
+4/43 times (9%).. bonehead plays
+```{r}
+valid_poss %>% 
+  group_by(xid_possession) %>% 
+  slice_tail(n=1) %>% 
+  ungroup() %>% 
+  filter(choice_foul == "Foul") %>% 
+  mutate(foul_3 = ifelse(fta_shooting == "3" | outcome == "FGM3", 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(mean(foul_3))
+```
+
+Where do teams like to shoot from? How lucky/unlucky are the shots?
+```{r}
+filtered_data %>% 
+  group_by(shot_m_region) %>% 
+  count() %>%
+  filter(shot_m_region != "null") %>% 
+  mutate(freq = n/298)
+```
+
+Teams go for threes ~81% of the time
+
+```{r}
+filtered_data %>% 
+  filter(valid_decision == TRUE) %>% 
+  filter(shot_fga == "1" & shot_fga3 == "0") %>% 
+  group_by(def_team_won) %>% 
+  count()
+```
+Defenses that allow 2pt attempts win 88% of the time. No merit to allowing twos. Foul them
+
+
+```{r}
+exp_pts <- filtered_data %>% 
+  filter(shot_qSP != "null") %>% 
+  mutate(shot_qSP = as.double(shot_qSP)) %>% 
+  mutate(expected_points = shot_qSP/100 * 2)
+
+exp_pts %>% 
+  ungroup() %>% 
+  summarise(mean(expected_points/2))
+```
+Avg. look is 42% eFG
+
+```{r}
+exp_pts %>% 
+  ungroup() %>% 
+  summarise(mean(ptsScored_team/2))
+```
+But players are shooting 36% eFG. Not "clutch?" or unlucky? This adds to the case to foul. Players are underperforming their field goal shooting
+
+```{r}
+valid_poss %>% 
+  filter(choice_foul == "Foul" & def_team_won == FALSE)
+```
+1) Pelicans turned ball over
+2) Luka magic off the rim to himself. "I need a recovery beer" game
+3) Wizards intentionally fouling too soft. 4 point play Kennard
+
+Hypothesis test.. given n choices (constant)
+```{r}
+valid_poss %>% 
+  group_by(xid_possession) %>% 
+  slice_tail(n=1) %>% 
+  ungroup() %>% 
+  group_by(choice_foul, def_team_won) %>% 
+  count()
+```
+
+```{r}
+def_team_won_prior = (40+214)/(40+214+2+30)
+
+set.seed(425)
+sim_values <- replicate(10000, {
+sim <- data.frame(choice_foul = c(rep("Defend", 243), rep("Foul", 43)),
+           random_sim = rep(runif(243+43, 0,1))
+           ) %>% 
+  mutate(def_team_won = ifelse(random_sim < def_team_won_prior, TRUE, FALSE)) %>% 
+  group_by(choice_foul, def_team_won) %>% count() %>% 
+  group_by(choice_foul) %>% 
+  mutate(win_pct = n / sum(n)) %>% 
+  filter(def_team_won == T)
+
+foul_win <- sim %>% 
+  filter(choice_foul == "Foul") %>% 
+  pull(win_pct)
+
+non_foul_win <- sim %>% filter(choice_foul == "Defend") %>% 
+  pull(win_pct)
+
+foul_win - non_foul_win
+})
+
+reality <- valid_poss %>% 
+  group_by(xid_possession) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  group_by(choice_foul, def_team_won) %>% 
+  count() %>% 
+  group_by(choice_foul) %>% 
+  mutate(win_pct = n / sum(n)) %>% 
+  filter(def_team_won == T)
+
+foul_win <- reality %>% filter(choice_foul == "Foul") %>% 
+  pull(win_pct)
+
+non_foul_win <- reality %>% filter(choice_foul == "Defend") %>% 
+  pull(win_pct)
+
+reality_diff <- foul_win - non_foul_win
+
+
+
+sim_values[sim_values > reality_diff] %>% length()
+```
+Chance this difference was due to randomness
+```{r}
+1-(1663/10000)
+```
+Wins added per season
+```{r}
+reality_diff * 286/30/3
+```
+
+```{r}
+library(gt)
+```
+
+
+```{r}
+filtered_data %>% 
+  filter(fouls_def_shooting == "1") %>% 
+  ggplot(aes(gameClock_end)) +
+  geom_density(fill = "#00471b") +
+  scale_x_reverse() +
+  theme_minimal() +
+  labs(
+    title = "When do teams get caught committing a shooting foul?",
+    subtitle = "Risk of a shooting foul increases with less time in the game",
+    x = "Seconds Remaining at time of foul",
+    y = "Density"
+  )
+```
+
+Outcomes
+```{r}
+strategy_avg_points <- valid_poss %>% 
+  mutate(shot_qSP = as.double(shot_qSP)) %>% 
+  group_by(xid_possession) %>% 
+  arrange(desc(gameClock_start)) %>% 
+  slice_tail(n = 1) %>% # take final action in possession
+  group_by(choice_foul) %>% 
+  summarise(Average = round(mean(ptsScored_team),2)) %>% 
+  rename(Strategy = choice_foul)
+```
+
+```{r}
+points_conceded <- valid_poss %>% 
+  mutate(shot_qSP = as.double(shot_qSP)) %>% 
+  group_by(xid_possession) %>% 
+  arrange(desc(gameClock_start)) %>% 
+  slice_tail(n = 1) %>% # take final action in possession
+  group_by(choice_foul, ptsScored_team) %>% 
+  summarise(n = n(), qeFG = mean(shot_qSP, na.rm = T), ptsAllowed = mean(ptsScored_team), wins = sum(def_team_won), win_pct = wins/n)
+
+strategy_w_l <- valid_poss %>% 
+  group_by(xid_possession) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  group_by(choice_foul, def_team_won) %>% 
+  count() %>% 
+  group_by(choice_foul) %>% 
+  mutate(opportunities = sum(n)) %>% 
+  filter(def_team_won == TRUE) %>% 
+  mutate(win_pct = scales::percent(n / opportunities),
+         losses = opportunities - n) %>% 
+  mutate(`W/L` = glue::glue(n,"-",losses)) %>% 
+  ungroup() %>% 
+  mutate(Frequency = scales::percent(opportunities/sum(opportunities))) %>% 
+  select(Strategy = choice_foul, Frequency, `W/L`, `Win%` = win_pct) %>% 
+  arrange(desc(Strategy))
+
+
+
+
+strategy_points_allowed <- points_conceded %>% 
+  select(-qeFG, -ptsAllowed, -win_pct, -wins) %>% 
+  group_by(choice_foul) %>% 
+  mutate(opportunities = sum(n)) %>% 
+  mutate(Freq = n/opportunities) %>% 
+  mutate(ptsScored_team = paste0(ptsScored_team, " points")) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = "ptsScored_team", values_from = "Freq") %>% 
+  mutate_all(., ~coalesce(., 0)) %>% 
+  mutate(`3+ points` = `3 points` + `4 points`) %>% 
+  select(-`3 points`, -`4 points`) %>% 
+  mutate(across(matches("point"), ~scales::percent(.))) %>% 
+  select(-opportunities, `1 point` = `1 points`, Strategy = choice_foul)
+
+strategy_w_l %>% 
+  left_join(strategy_points_allowed) %>% 
+  left_join(strategy_avg_points) %>% 
+  select(Strategy, Frequency, matches("point"), Average, `W/L`, `Win%`) %>% 
+  gt(rowname_col = "Strategy") %>% 
+  tab_header(title = md("**Fouling Up 3 is beneficial but uncommon**"),
+             subtitle = "Up by 3, Shot Clock off, at least 5 seconds remaining") %>% 
+  cols_align(align = "center", columns = -"Strategy") %>% 
+  tab_spanner(label = "Points Allowed",
+              columns = c(matches("point"), "Average")) %>% 
+  tab_style(style = cell_text(weight = "bold"),
+            locations = cells_column_labels(columns = c("Frequency", "W/L", "Win%"))) %>%
+    tab_style(style = cell_text(weight = "bold"),
+            locations = cells_column_spanners()) %>%
+  gtsave("everything_table.png")
+```
+
+```{r}
+points_conceded %>% 
+  ggplot(aes(x = ptsScored_team, y = n, fill = choice_foul)) +
+  geom_bar(stat = "identity", position = position_dodge(preserve = "single"))
+```
+
+```{r}
+#plot <- points_conceded %>% 
+#  ungroup() %>% 
+#  mutate(ptsScored_team = ifelse(ptsScored_team >=3, "3+", as.character(ptsScored_team))) %>% 
+#  group_by(ptsScored_team) %>% 
+#  summarise(n = sum(n), wins = sum(wins)) %>% 
+#  mutate(win_pct = wins/n) %>% 
+#  mutate(lose_pct = 1 - win_pct) %>% 
+#  mutate(fill = ifelse(ptsScored_team == "3+", "#00471B", "#EEE1C6")) %>% 
+#  ggplot(aes(x = ptsScored_team, y = lose_pct, fill = fill)) + #color related to Y
+#  geom_bar(stat = "identity") +
+#  scale_fill_identity(guide = "legend") +
+#  geom_text(aes(label = scales::percent(lose_pct, 1)), vjust = -0.5) +
+#  scale_y_continuous(labels = percent, expand = c(0,0), limits = c(0, 0.37)) +
+#  labs(x = "Points Allowed in Defensive Possession (Up 3, shot clock off)",
+#       y = "Lose %",
+#       title = "Teams LOSE 35% of the time when they allow 3+ points",
+#       subtitle = "Points aren't created equal in the final seconds") +
+#  theme_classic() +
+#  theme(legend.position = "none",
+#        plot.title = element_text(face = "bold", hjust = 0.5),
+#        plot.subtitle = element_text(face = "italic", hjust = 0.5),
+#        axis.text.y = element_text(face = "bold"),
+#        panel.background = element_blank()) 
+#
+#ggsave(plot = plot, file = "points_allowed_lose_pct.png", width = 6, height = 4)
+```
+
+```{r}
+library(plotly)
+plot <- filtered_data %>% filter(outcome == "FOU_S" | outcome == "FOU_B") %>% 
+  ggplot(aes(x = gameClock_end, color = outcome)) +
+  geom_density() +
+  scale_x_reverse() 
+
+ggplotly(plot)
+
+filtered_data %>% filter(outcome == "FOU_S" | outcome == "FOU_B") %>% 
+  filter(poss_start_time < 5) %>% 
+  group_by(outcome) %>% count()
+# 5 seconds is the threshold where shooting fouls are as common as "bonus" fouls
+```
+
