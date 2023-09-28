@@ -1,7 +1,7 @@
 # End_Game_Foul_Strategy_Analysis
 Application Project
 
-### Final Report.pdf
+### Final Output.pdf
 * The final 2-page report for coaches and analysts
 
 ### endgame_strategy_scratchwork.Rmd
